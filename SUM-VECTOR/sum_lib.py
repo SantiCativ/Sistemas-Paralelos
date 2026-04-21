@@ -8,7 +8,7 @@ from typing import Iterable, List, Sequence
 
 DEFAULT_SEED = 2026
 rng = np.random.default_rng(DEFAULT_SEED)
-DEFAULT_VECTOR_SIZE = 100_000_000
+DEFAULT_VECTOR_SIZE = 1_000_000_000
 DEFAULT_VECTOR: np.ndarray = rng.random(DEFAULT_VECTOR_SIZE)
 
 
