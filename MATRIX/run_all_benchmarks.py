@@ -3,54 +3,61 @@
 run_all_benchmarks.py
 =====================
 Ejecuta todos los scripts de multiplicación de matrices con las combinaciones
-requeridas por el trabajo práctico y genera un CSV con los resultados.
+requeridas y genera un CSV con los resultados.
 
 Uso:
     python run_all_benchmarks.py [--output resultados.csv] [--seed 2026]
-
-El script detecta automáticamente la cantidad de núcleos físicos y los
-incluye como una combinación adicional de workers.
+    python run_all_benchmarks.py --skip-slow   # salta secuencial N=1024
 """
+
+from __future__ import annotations
+
 import argparse
+import csv
+import multiprocessing
+import os
+import platform
 import subprocess
 import sys
-import os
-import csv
 import time
-import platform
-import multiprocessing
 
-# ─────────────────────────────────────────────
-# Configuración de combinaciones requeridas
-# ─────────────────────────────────────────────
+# ── Combinaciones requeridas ──────────────────────────────────────────────────
+# (workers, complexity)
 REQUIRED_COMBINATIONS = [
-    {"workers": 1,   "complexity": 512},
-    {"workers": 4,   "complexity": 512},
-    {"workers": 4,   "complexity": 1024},
-    # N físicos + complexity 1024 se agrega dinámicamente
+    (1,  512),
+    (1,  1024),
+    (4,  512),
+    (4,  1024),
+    (10, 1024),   # N físicos: se reemplaza dinámicamente si hay más o menos
 ]
 
 SEED = 2026
 
-# Scripts que ignoran --workers (siempre 1 proceso)
+# Scripts que ignoran --workers (siempre workers=1)
 SINGLE_WORKER_SCRIPTS = {
     "01_sequential.py",
     "02_sequential_transposed.py",
-    "05_numpy.py",
-    "06_numba.py",
-    "07_pytorch.py",
-    "08_numba_parallel.py",   # Numba gestiona sus propios threads vía OpenMP
+    "07_numba.py",
+}
+
+# Scripts paralelos (se corren para cada combinación de workers)
+PARALLEL_SCRIPTS = {
+    "03_threading.py",
+    "04_threadpoolexecutor.py",
+    "05_multiprocessing.py",
+    "06_processpoolexecutor.py",
+    "08_numba_parallel.py",
 }
 
 ALL_SCRIPTS = [
     "01_sequential.py",
     "02_sequential_transposed.py",
     "03_threading.py",
-    "04_multiprocessing.py",
-    "05_numpy.py",
-    "06_numba.py",
-    "07_pytorch.py",
-    "08_numba_parallel.py",   # EXTRA: Numba parallel=True
+    "04_threadpoolexecutor.py",
+    "05_multiprocessing.py",
+    "06_processpoolexecutor.py",
+    "07_numba.py",
+    "08_numba_parallel.py",
 ]
 
 COLORS = {
@@ -63,10 +70,10 @@ COLORS = {
 }
 
 def c(color, text):
-    return f"{COLORS.get(color,'')}{text}{COLORS['reset']}"
+    return f"{COLORS.get(color, '')}{text}{COLORS['reset']}"
 
 
-def get_physical_cores():
+def get_physical_cores() -> int:
     try:
         import psutil
         return psutil.cpu_count(logical=False) or multiprocessing.cpu_count()
@@ -74,8 +81,7 @@ def get_physical_cores():
         pass
     try:
         result = subprocess.run(
-            ["bash", "-c",
-             "cat /sys/devices/system/cpu/cpu*/topology/core_id | sort -u | wc -l"],
+            ["bash", "-c", "cat /sys/devices/system/cpu/cpu*/topology/core_id | sort -u | wc -l"],
             capture_output=True, text=True
         )
         cores = int(result.stdout.strip())
@@ -86,89 +92,49 @@ def get_physical_cores():
     return multiprocessing.cpu_count()
 
 
-def build_combinations(physical_cores):
-    combos = list(REQUIRED_COMBINATIONS)
-    if physical_cores not in [c["workers"] for c in combos if c["complexity"] == 1024]:
-        combos.append({"workers": physical_cores, "complexity": 1024})
-    seen = set()
-    unique = []
-    for combo in combos:
-        key = (combo["workers"], combo["complexity"])
-        if key not in seen:
-            seen.add(key)
-            unique.append(combo)
-    return unique
+def build_combinations(physical_cores: int):
+    """Reemplaza workers=10 por el número real de núcleos físicos."""
+    combos = []
+    for w, c_ in REQUIRED_COMBINATIONS:
+        actual_w = physical_cores if w == 10 else w
+        if (actual_w, c_) not in combos:
+            combos.append((actual_w, c_))
+    return combos
 
 
-def run_script(script_path, workers, complexity, seed):
-    """
-    Ejecuta un script y retorna una LISTA de dicts de resultados.
-    Un script puede emitir múltiples filas (ej: pytorch emite cpu + cuda).
-    """
-    cmd = [
-        sys.executable, script_path,
-        "--workers", str(workers),
-        "--complexity", str(complexity),
-        "--seed", str(seed),
-    ]
+def run_script(script_path: str, workers: int, complexity: int, seed: int) -> list[dict]:
+    """Ejecuta un script y retorna lista de dicts con los resultados (puede ser >1 fila)."""
+    cmd = [sys.executable, script_path,
+           "--workers", str(workers),
+           "--complexity", str(complexity),
+           "--seed", str(seed)]
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        output = result.stdout.strip()
-        lines = [l for l in output.split("\n") if l and not l.startswith("#")]
-
-        # Recopilar TODAS las filas de datos (puede haber más de una)
-        data_rows = []
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        lines = [l for l in result.stdout.strip().split("\n")
+                 if l and not l.startswith("#")]
+        rows = []
         for line in lines:
             parts = line.split(",")
             if len(parts) == 5 and parts[0] != "method":
                 method, w, comp, t, cs = parts
-                data_rows.append({
-                    "method": method,
-                    "workers": w,
-                    "complexity": comp,
-                    "time_s": t,
-                    "checksum": cs,
-                    "error": "",
-                })
-
-        if data_rows:
-            return data_rows
-
-        return [{
-            "method": os.path.basename(script_path),
-            "workers": str(workers),
-            "complexity": str(complexity),
-            "time_s": "ERROR",
-            "checksum": "0",
-            "error": result.stderr[:200] if result.stderr else "No output",
-        }]
-
+                rows.append({"method": method, "workers": w, "complexity": comp,
+                              "time_s": t, "checksum": cs, "error": ""})
+        if rows:
+            return rows
+        return [{"method": os.path.basename(script_path), "workers": str(workers),
+                 "complexity": str(complexity), "time_s": "ERROR",
+                 "checksum": "0", "error": result.stderr[:200] or "No output"}]
     except subprocess.TimeoutExpired:
-        return [{
-            "method": os.path.basename(script_path),
-            "workers": str(workers),
-            "complexity": str(complexity),
-            "time_s": "TIMEOUT",
-            "checksum": "0",
-            "error": "Timeout >600s",
-        }]
+        return [{"method": os.path.basename(script_path), "workers": str(workers),
+                 "complexity": str(complexity), "time_s": "TIMEOUT",
+                 "checksum": "0", "error": "Timeout >600s"}]
     except Exception as e:
-        return [{
-            "method": os.path.basename(script_path),
-            "workers": str(workers),
-            "complexity": str(complexity),
-            "time_s": "ERROR",
-            "checksum": "0",
-            "error": str(e),
-        }]
+        return [{"method": os.path.basename(script_path), "workers": str(workers),
+                 "complexity": str(complexity), "time_s": "ERROR",
+                 "checksum": "0", "error": str(e)}]
 
 
-def compute_speedup_efficiency(rows):
+def compute_speedup_efficiency(rows: list[dict]) -> list[dict]:
     """Speed-up y eficiencia relativo al secuencial tradicional workers=1."""
     baselines = {}
     for r in rows:
@@ -179,16 +145,12 @@ def compute_speedup_efficiency(rows):
                 pass
 
     for r in rows:
-        comp = r["complexity"]
-        baseline = baselines.get(comp)
+        baseline = baselines.get(r["complexity"])
         try:
             t = float(r["time_s"])
             if baseline and t > 0:
                 speedup = baseline / t
-                try:
-                    w = int(r["workers"])
-                except ValueError:
-                    w = 1
+                w = int(r["workers"])
                 efficiency = (speedup / w) * 100
                 r["speedup"] = f"{speedup:.4f}"
                 r["efficiency_pct"] = f"{efficiency:.2f}"
@@ -201,7 +163,7 @@ def compute_speedup_efficiency(rows):
     return rows
 
 
-def print_system_info(physical_cores):
+def print_system_info(physical_cores: int) -> None:
     print(c("bold", "\n══════════════════════════════════════════════"))
     print(c("bold", "   BENCHMARK — Multiplicación de Matrices"))
     print(c("bold", "   Sistemas Paralelos — UNTDF 2026"))
@@ -214,17 +176,28 @@ def print_system_info(physical_cores):
     print()
 
 
-def print_row(row):
-    t = row["time_s"]
-    if t not in ("ERROR", "TIMEOUT", "SKIPPED") and "ERROR" not in str(t) and "NOT_AVAILABLE" not in str(t):
-        print(c("green", f"✓  {float(t):.4f}s  (checksum: {row['checksum'][:14]}...)"))
-    elif "NOT_INSTALLED" in str(t) or "NOT_AVAILABLE" in str(t):
-        print(c("yellow", f"⚠  {t}"))
+def print_row_result(rows: list[dict]) -> None:
+    if len(rows) == 1:
+        r = rows[0]
+        t = r["time_s"]
+        if t not in ("ERROR", "TIMEOUT") and "ERROR" not in t and "NOT" not in t:
+            print(c("green", f"✓  {float(t):.4f}s  (checksum: {r['checksum'][:14]}...)"))
+        elif "NOT_INSTALLED" in t or "NOT_AVAILABLE" in t:
+            print(c("yellow", f"⚠  {t}"))
+        else:
+            print(c("red", f"✗  {t} — {r.get('error','')[:60]}"))
     else:
-        print(c("red", f"✗  {t} — {row.get('error','')[:60]}"))
+        print()
+        for r in rows:
+            t = r["time_s"]
+            print(f"              → {r['method']}: ", end="")
+            if t not in ("ERROR", "TIMEOUT") and "ERROR" not in t:
+                print(c("green", f"✓  {float(t):.4f}s"))
+            else:
+                print(c("red", f"✗  {t}"))
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Ejecuta todos los benchmarks de matrices.")
     parser.add_argument("--output", default="resultados.csv")
     parser.add_argument("--seed", type=int, default=SEED)
@@ -239,80 +212,65 @@ def main():
     print_system_info(physical_cores)
 
     all_results = []
+    single_worker_done: set = set()  # (script, complexity) ya ejecutados
 
-    # Rastrear qué (script, complexity) ya fueron ejecutados
-    # Los scripts de un solo worker deben correr UNA VEZ por complexity,
-    # independientemente de cuántas combinaciones de workers haya.
-    single_worker_done = set()  # (script, complexity)
-
-    # Contar total de runs para el progreso
-    complexities_seen = set()
+    # Contar total de runs
     total_runs = 0
-    for combo in combinations:
-        w, comp = combo["workers"], combo["complexity"]
+    for workers, complexity in combinations:
         for script in ALL_SCRIPTS:
             if script in SINGLE_WORKER_SCRIPTS:
-                if comp not in complexities_seen:
+                if (script, complexity) not in single_worker_done:
                     total_runs += 1
             else:
                 total_runs += 1
-        complexities_seen.add(comp)
+    # Reset para la ejecución real
+    single_worker_done = set()
 
     run_num = 0
-    for combo in combinations:
-        workers = combo["workers"]
-        complexity = combo["complexity"]
-
-        print(c("cyan", f"\n▶ Combinación: --workers {workers} --complexity {complexity}"))
+    for workers, complexity in combinations:
+        print(c("cyan", f"\n▶ workers={workers}  complexity={complexity}"))
         print("─" * 50)
 
         for script in ALL_SCRIPTS:
-            # Scripts de un solo worker: saltar si ya se corrió para esta complexity
+            # Scripts de un solo worker: ejecutar una vez por complexity
             if script in SINGLE_WORKER_SCRIPTS:
                 if (script, complexity) in single_worker_done:
                     continue
                 single_worker_done.add((script, complexity))
+                effective_workers = 1
+            else:
+                effective_workers = workers
 
             run_num += 1
             script_path = os.path.join(script_dir, script)
 
             if not os.path.exists(script_path):
-                print(c("red", f"  ✗ {script} — archivo no encontrado"))
+                print(c("red", f"  ✗ {script} — no encontrado"))
                 continue
 
+            # Saltar secuencial N=1024 si --skip-slow
             if args.skip_slow and script == "01_sequential.py" and complexity == 1024:
-                print(c("yellow", f"  ⚠ {script} — SALTADO (--skip-slow)"))
+                print(c("yellow", f"  ⚠ [{run_num}/{total_runs}] {script} — SALTADO"))
                 all_results.append({
-                    "method": "sequential_traditional",
-                    "workers": "1",
-                    "complexity": str(complexity),
-                    "time_s": "SKIPPED",
-                    "checksum": "0",
-                    "error": "Skipped by --skip-slow",
-                })
+                    "method": "sequential_traditional", "workers": "1",
+                    "complexity": str(complexity), "time_s": "SKIPPED",
+                    "checksum": "0", "error": "skip-slow"})
                 continue
 
-            print(f"  [{run_num}/{total_runs}] {script} ... ", end="", flush=True)
-            rows = run_script(script_path, workers, complexity, args.seed)
+            print(f"  [{run_num}/{total_runs}] {script} (workers={effective_workers}) ... ",
+                  end="", flush=True)
 
-            # Un script puede devolver múltiples filas (ej: pytorch cpu + cuda)
-            if len(rows) == 1:
-                print_row(rows[0])
-            else:
-                print()  # salto de línea para mostrar cada sub-resultado
-                for row in rows:
-                    print(f"              → {row['method']}: ", end="")
-                    print_row(row)
-
+            rows = run_script(script_path, effective_workers, complexity, args.seed)
+            print_row_result(rows)
             all_results.extend(rows)
 
     # Calcular speed-up y eficiencia
     all_results = compute_speedup_efficiency(all_results)
 
     # Guardar CSV
-    fieldnames = ["method", "workers", "complexity", "time_s", "checksum", "speedup", "efficiency_pct", "error"]
+    fieldnames = ["method", "workers", "complexity", "time_s", "checksum",
+                  "speedup", "efficiency_pct", "error"]
     output_path = os.path.join(script_dir, args.output)
-
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -322,21 +280,20 @@ def main():
     print(c("green", f"  ✓ Resultados guardados en: {output_path}"))
     print(c("bold", f"══════════════════════════════════════════════\n"))
 
-    # Resumen en pantalla
-    print(c("bold", "RESUMEN DE RESULTADOS"))
-    print(f"  {'Método':<30} {'Workers':>7} {'N':>6} {'Tiempo(s)':>12} {'Speed-up':>10} {'Efic%':>8}")
-    print("  " + "─" * 76)
+    # Resumen
+    print(c("bold", "RESUMEN"))
+    print(f"  {'Método':<28} {'W':>4} {'N':>6} {'Tiempo(s)':>12} {'Speed-up':>10} {'Efic%':>8}")
+    print("  " + "─" * 72)
     for r in all_results:
         t = r["time_s"]
-        sp = r.get("speedup", "N/A")
-        ef = r.get("efficiency_pct", "N/A")
         try:
-            print(f"  {r['method']:<30} {r['workers']:>7} {r['complexity']:>6} {float(t):>12.4f} {sp:>10} {ef:>8}")
+            print(f"  {r['method']:<28} {r['workers']:>4} {r['complexity']:>6} "
+                  f"{float(t):>12.4f} {r.get('speedup','N/A'):>10} {r.get('efficiency_pct','N/A'):>8}")
         except (ValueError, TypeError):
-            print(c("yellow", f"  {r['method']:<30} {r['workers']:>7} {r['complexity']:>6} {t:>12}"))
+            print(c("yellow", f"  {r['method']:<28} {r['workers']:>4} {r['complexity']:>6} {t:>12}"))
 
     print()
-    print(c("cyan", "  Tip: Compartí el archivo resultados.csv con Claude para generar el informe."))
+    print(c("cyan", "  Tip: Subí resultados.csv acá para generar el informe completo."))
     print()
 
 

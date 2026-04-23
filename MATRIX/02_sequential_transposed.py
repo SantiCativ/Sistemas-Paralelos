@@ -1,51 +1,44 @@
-"""
-Multiplicación de matrices - Método secuencial transpuesta.
-Se transpone B para mejorar la localidad de caché (acceso por fila en vez de columna).
-"""
+"""Multiplicación de matrices — Secuencial transpuesta (mejora localidad de caché)."""
+
+from __future__ import annotations
+
 import argparse
-import time
-import numpy as np
+from time import perf_counter
 
-def generate_matrix(n, seed):
-    return np.random.default_rng(seed).random((n, n)).tolist()
+from matrix_lib import generate_matrix, transpose, checksum, print_result, DEFAULT_COMPLEXITY, DEFAULT_SEED
 
-def transpose(B, n):
-    return [[B[j][i] for j in range(n)] for i in range(n)]
 
-def matmul_transposed(A, B, n):
-    Bt = transpose(B, n)
+def matmul_transposed(A, Bt, n):
     C = [[0.0] * n for _ in range(n)]
     for i in range(n):
+        A_i = A[i]
         for j in range(n):
             s = 0.0
             Bt_j = Bt[j]
-            A_i = A[i]
             for k in range(n):
                 s += A_i[k] * Bt_j[k]
             C[i][j] = s
     return C
 
-def checksum(C):
-    return sum(C[i][j] for i in range(len(C)) for j in range(len(C[0])))
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--complexity", type=int, default=512)
-    parser.add_argument("--seed", type=int, default=2026)
-    parser.add_argument("--workers", type=int, default=1)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Multiplicación de matrices — Secuencial transpuesta")
+    parser.add_argument("--complexity", type=int, default=DEFAULT_COMPLEXITY)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--workers", type=int, default=1)  # ignorado
     args = parser.parse_args()
 
     n = args.complexity
     A = generate_matrix(n, args.seed)
     B = generate_matrix(n, args.seed + 1)
+    Bt = transpose(B, n)
 
-    start = time.perf_counter()
-    C = matmul_transposed(A, B, n)
-    elapsed = time.perf_counter() - start
+    start = perf_counter()
+    C = matmul_transposed(A, Bt, n)
+    elapsed = perf_counter() - start
 
-    cs = checksum(C)
-    print(f"method,workers,complexity,time,checksum")
-    print(f"sequential_transposed,1,{n},{elapsed:.6f},{cs:.6f}")
+    print_result("sequential_transposed", 1, n, checksum(C), elapsed)
+
 
 if __name__ == "__main__":
     main()
