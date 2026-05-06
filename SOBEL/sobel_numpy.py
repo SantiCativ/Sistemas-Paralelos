@@ -8,39 +8,36 @@ image = Image.open("imagenes/penguins.jpg")
 # RGB -> numpy
 rgb = np.asarray(image, dtype=np.float32)
 
-# convertir a gris
+# convertir a gris (vectorizado)
 gray = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+gray = np.clip(gray, 0, 255).astype(np.float32)
 
-gray_u8 = np.clip(gray, 0, 255).astype(np.uint8)
+# Sobel con slices vectorizados
+# Cada vecino de la vecindad 3x3 se extrae como un subarreglo desplazado.
+# Esto evita cualquier loop explícito en Python: todas las operaciones
+# se aplican sobre arreglos completos usando broadcasting de NumPy.
 
-# Sobel
-img = gray_u8.astype(np.float32)
+top_left     = gray[:-2, :-2]
+top          = gray[:-2, 1:-1]
+top_right    = gray[:-2, 2:]
+left         = gray[1:-1, :-2]
+right        = gray[1:-1, 2:]
+bottom_left  = gray[2:,  :-2]
+bottom       = gray[2:,  1:-1]
+bottom_right = gray[2:,  2:]
 
-# dimensiones
-height, width = img.shape
+# Gx: kernel [[-1,0,1],[-2,0,2],[-1,0,1]]
+gx = (-top_left  + top_right
+      - 2.0*left + 2.0*right
+      - bottom_left + bottom_right)
 
-# kernels
-Gx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+# Gy: kernel [[-1,-2,-1],[0,0,0],[1,2,1]]
+gy = (-top_left  - 2.0*top - top_right
+      + bottom_left + 2.0*bottom + bottom_right)
 
-Gy = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=np.float32)
-
-# imagen resultado
-result = np.zeros((height, width), dtype=np.float32)
-
-# recorrer imagen
-for row in range(1, height - 1):
-
-    for col in range(1, width - 1):
-
-        # ventana 3x3
-        p = img[row - 1 : row + 2, col - 1 : col + 2]
-
-        # convolución
-        gx = np.sum(p * Gx)
-        gy = np.sum(p * Gy)
-
-        # magnitud gradiente
-        result[row, col] = np.sqrt(gx * gx + gy * gy)
+# magnitud del gradiente
+result = np.zeros_like(gray)
+result[1:-1, 1:-1] = np.sqrt(gx**2 + gy**2)
 
 # mostrar resultado
 plt.imshow(result, cmap="gray")
