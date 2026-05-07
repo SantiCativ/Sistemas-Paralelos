@@ -1,7 +1,8 @@
-from numba import njit, prange
+from numba import get_num_threads, njit, prange
 from PIL import Image
-import matplotlib.pyplot as plt
 import numpy as np
+
+from sobel_common import run_cli
 
 
 @njit(parallel=True)
@@ -77,19 +78,35 @@ def sobel_parallel(gray):
     return result
 
 
-# cargar imagen
-image = Image.open("imagenes/penguins_6000x6000.jpg")
+def build_runner():
+    def load_step(image_path):
+        # cargar imagen
+        image = Image.open(image_path)
 
-# PIL -> NumPy
-rgb = np.array(image, dtype=np.float32)
+        # PIL -> NumPy
+        return np.array(image, dtype=np.float32)
 
-# gris
-gray = rgb_to_gray(rgb)
+    def gray_step(rgb):
+        # gris
+        return rgb_to_gray(rgb)
 
-# sobel
-result = sobel_parallel(gray)
+    def warmup(image_path):
+        image = Image.open(image_path).resize((8, 8))
+        rgb = np.array(image, dtype=np.float32)
+        gray = rgb_to_gray(rgb)
+        sobel_parallel(gray)
 
-# mostrar
-plt.imshow(result, cmap="gray")
-plt.axis("off")
-plt.show()
+    def info():
+        return {"Workers Numba": get_num_threads()}
+
+    return {
+        "load": load_step,
+        "gray": gray_step,
+        "sobel": sobel_parallel,
+        "warmup": warmup,
+        "info": info,
+    }
+
+
+if __name__ == "__main__":
+    run_cli(build_runner(), "numba_parallel")
