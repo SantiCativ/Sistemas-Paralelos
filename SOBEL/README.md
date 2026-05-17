@@ -8,6 +8,7 @@ Ejecutar una imagen con 5 corridas y tiempos promedio:
 python sobel_secuencial.py --r=5 --image=6000x6000
 python sobel_numpy.py --r=5 --image=6000x6000
 python sobel_numba_parallel.py --r=5 --image=6000x6000
+python sobel_numba_cuda.py --r=5 --image=6000x6000
 ```
 
 Si se omite `--r`, el script hace una corrida, muestra los tiempos en terminal y abre la imagen resultante:
