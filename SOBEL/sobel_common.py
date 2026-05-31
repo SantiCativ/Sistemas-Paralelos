@@ -34,6 +34,12 @@ def parse_args(method_name):
         action="store_true",
         help="Imprime solo una fila CSV con los promedios.",
     )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "cuda", "mps"),
+        default=None,
+        help="Dispositivo de ejecucion. Si se omite, el metodo puede autodetectarlo.",
+    )
     return parser.parse_args()
 
 
@@ -57,22 +63,53 @@ def timed_run(runner, image_path):
     load = runner.get("load")
     source = load(image_path) if load is not None else image_path
 
+    transfer_seconds = 0.0
+    measure_transfer = get_runner_value(runner, "measure_transfer", True)
+    transfer_in = runner.get("transfer_in")
+    if measure_transfer and transfer_in is not None:
+        transfer_start = time.perf_counter()
+        source = transfer_in(source)
+        synchronize(runner)
+        transfer_seconds += time.perf_counter() - transfer_start
+
     gray_start = time.perf_counter()
     gray = runner["gray"](source)
+    synchronize(runner)
     gray_seconds = time.perf_counter() - gray_start
 
     sobel_start = time.perf_counter()
     result = runner["sobel"](gray)
+    synchronize(runner)
     sobel_seconds = time.perf_counter() - sobel_start
+
+    transfer_out = runner.get("transfer_out")
+    if measure_transfer and transfer_out is not None:
+        transfer_start = time.perf_counter()
+        result = transfer_out(result)
+        synchronize(runner)
+        transfer_seconds += time.perf_counter() - transfer_start
+
     total_seconds = gray_seconds + sobel_seconds
 
     return {
+        "transferencia_s": transfer_seconds,
         "rgb_gris_s": gray_seconds,
         "sobel_s": sobel_seconds,
         "total_s": total_seconds,
         "blancos_pct": white_pixel_percent(result),
         "result": result,
     }
+
+
+def synchronize(runner):
+    sync = runner.get("synchronize")
+    if sync is not None:
+        sync()
+
+
+def get_runner_value(runner, key, default=None):
+    value = runner.get(key, default)
+    return value() if callable(value) else value
 
 
 def white_pixel_percent(result):
@@ -86,6 +123,7 @@ def run_benchmark(runner, method_name, image_name, runs):
         raise ValueError("--r debe ser mayor o igual a 1")
 
     image_path = resolve_image_path(image_name)
+    transfer_times = []
     rgb_gray_times = []
     sobel_times = []
     total_times = []
@@ -98,6 +136,7 @@ def run_benchmark(runner, method_name, image_name, runs):
 
     for _ in range(runs):
         timing = timed_run(runner, image_path)
+        transfer_times.append(timing["transferencia_s"])
         rgb_gray_times.append(timing["rgb_gris_s"])
         sobel_times.append(timing["sobel_s"])
         total_times.append(timing["total_s"])
@@ -106,8 +145,10 @@ def run_benchmark(runner, method_name, image_name, runs):
 
     return {
         "method": method_name,
+        "device": get_runner_value(runner, "device", ""),
         "image": image_name,
         "runs": runs,
+        "transferencia_promedio_s": statistics.fmean(transfer_times),
         "rgb_gris_promedio_s": statistics.fmean(rgb_gray_times),
         "sobel_promedio_s": statistics.fmean(sobel_times),
         "total_promedio_s": statistics.fmean(total_times),
@@ -118,10 +159,13 @@ def run_benchmark(runner, method_name, image_name, runs):
 
 def print_human_summary(summary):
     print(f"Metodo: {summary['method']}")
+    if summary["device"]:
+        print(f"Dispositivo: {summary['device']}")
     print(f"Imagen: {summary['image']}")
     print(f"Corridas: {summary['runs']}")
     for label, value in summary.get("info", {}).items():
         print(f"{label}: {value}")
+    print(f"Transferencia promedio: {summary['transferencia_promedio_s']:.6f} s")
     print(f"RGB->gris promedio: {summary['rgb_gris_promedio_s']:.6f} s")
     print(f"Sobel promedio: {summary['sobel_promedio_s']:.6f} s")
     print(f"Total promedio: {summary['total_promedio_s']:.6f} s")
@@ -131,8 +175,10 @@ def print_human_summary(summary):
 def print_csv_summary(summary, include_header=False):
     fieldnames = [
         "method",
+        "device",
         "image",
         "runs",
+        "transferencia_promedio_s",
         "rgb_gris_promedio_s",
         "sobel_promedio_s",
         "total_promedio_s",
@@ -152,6 +198,9 @@ def show_result(result):
 
 def run_cli(runner, method_name):
     args = parse_args(method_name)
+    configure = runner.get("configure")
+    if configure is not None:
+        configure(args)
     runs = args.r if args.r is not None else 1
     summary = run_benchmark(runner, method_name, args.image, runs)
     info = runner.get("info")

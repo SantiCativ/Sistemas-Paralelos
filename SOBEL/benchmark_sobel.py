@@ -6,28 +6,41 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import torch
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_RUNS = 5
 DEFAULT_IMAGES = ("750x750", "1500x1500", "3000x3000", "6000x6000")
 METHODS = (
-    ("secuencial", "sobel_secuencial.py"),
-    ("numpy", "sobel_numpy.py"),
-    ("numba_parallel", "sobel_numba_parallel.py"),
+    ("secuencial", "sobel_secuencial.py", None),
+    ("numpy", "sobel_numpy.py", None),
+    ("numba_parallel", "sobel_numba_parallel.py", None),
 )
-FIELDNAMES = (
+SCRIPT_FIELDNAMES = (
     "method",
+    "device",
     "image",
     "runs",
+    "transferencia_promedio_s",
     "rgb_gris_promedio_s",
     "sobel_promedio_s",
     "total_promedio_s",
     "blancos_pct",
+)
+FIELDNAMES = SCRIPT_FIELDNAMES + (
     "speed_up",
     "performance_pct",
 )
 
-SCRIPT_FIELDNAMES = FIELDNAMES[:7]
+
+def available_devices():
+    devices = ["cpu"]
+    if torch.cuda.is_available():
+        devices.append("cuda")
+    if torch.backends.mps.is_available():
+        devices.append("mps")
+    return tuple(devices)
 
 
 def parse_args():
@@ -59,10 +72,23 @@ def parse_args():
         default=",".join(DEFAULT_IMAGES),
         help="Resoluciones separadas por coma. Por defecto recorre todas las de la consigna.",
     )
+    parser.add_argument(
+        "--devices",
+        default=",".join(available_devices()),
+        help="Dispositivos PyTorch separados por coma: cpu, cuda o mps.",
+    )
     return parser.parse_args()
 
 
-def run_script(method, script_name, image, runs):
+def build_methods(devices):
+    pytorch_methods = tuple(
+        (f"pytorch_{device}", "sobel_pytorch.py", device)
+        for device in devices
+    )
+    return METHODS + pytorch_methods
+
+
+def run_script(method, script_name, image, runs, device):
     command = [
         sys.executable,
         str(BASE_DIR / script_name),
@@ -70,6 +96,9 @@ def run_script(method, script_name, image, runs):
         f"--image={image}",
         "--csv",
     ]
+    if device is not None:
+        command.append(f"--device={device}")
+
     env = os.environ.copy()
     env.setdefault("NUMBA_NUM_THREADS", str(os.cpu_count() or 1))
 
@@ -98,14 +127,22 @@ def run_script(method, script_name, image, runs):
     return dict(zip(SCRIPT_FIELDNAMES, rows[0]))
 
 
-def collect_results(runs, workers, images):
+def collect_results(runs, workers, images, devices):
+    methods = build_methods(devices)
     tasks = {}
-    max_workers = max(1, min(workers, len(METHODS) * len(images)))
+    max_workers = max(1, min(workers, len(methods) * len(images)))
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for method, script_name in METHODS:
+        for method, script_name, device in methods:
             for image in images:
-                future = executor.submit(run_script, method, script_name, image, runs)
+                future = executor.submit(
+                    run_script,
+                    method,
+                    script_name,
+                    image,
+                    runs,
+                    device,
+                )
                 tasks[future] = (method, image)
 
         results_by_key = {}
@@ -115,7 +152,7 @@ def collect_results(runs, workers, images):
 
     return [
         results_by_key[(method, image)]
-        for method, _ in METHODS
+        for method, _, _ in methods
         for image in images
     ]
 
@@ -155,6 +192,13 @@ def write_csv(rows, output):
             stream.close()
 
 
+def split_values(raw_value, option):
+    values = tuple(value.strip() for value in raw_value.split(",") if value.strip())
+    if not values:
+        raise ValueError(f"{option} debe incluir al menos un valor")
+    return values
+
+
 def main():
     args = parse_args()
     if args.runs < 1:
@@ -162,11 +206,15 @@ def main():
     if args.workers < 1:
         raise ValueError("--workers debe ser mayor o igual a 1")
 
-    images = tuple(image.strip() for image in args.images.split(",") if image.strip())
-    if not images:
-        raise ValueError("--images debe incluir al menos una resolucion")
+    images = split_values(args.images, "--images")
+    devices = split_values(args.devices, "--devices")
+    invalid_devices = set(devices) - {"cpu", "cuda", "mps"}
+    if invalid_devices:
+        raise ValueError(f"Dispositivos invalidos: {', '.join(sorted(invalid_devices))}")
 
-    rows = add_relative_metrics(collect_results(args.runs, args.workers, images))
+    rows = add_relative_metrics(
+        collect_results(args.runs, args.workers, images, devices)
+    )
     write_csv(rows, args.output)
 
 
