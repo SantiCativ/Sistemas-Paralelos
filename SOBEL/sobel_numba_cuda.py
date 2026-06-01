@@ -79,15 +79,17 @@ def load_image(image_path):
     return np.asarray(image, dtype=np.uint8)
 
 
-def rgb_to_gray(rgb):
-    height, width, _ = rgb.shape
+def transfer_in(rgb):
+    return cuda.to_device(rgb)
+
+
+def rgb_to_gray(rgb_device):
+    height, width, _ = rgb_device.shape
     blocks_per_grid = blocks_for_shape(height, width)
 
-    rgb_device = cuda.to_device(rgb)
     gray_device = cuda.device_array((height, width), dtype=np.uint8)
 
     rgb_to_gray_cuda[blocks_per_grid, THREADS_PER_BLOCK](rgb_device, gray_device)
-    cuda.synchronize()
 
     return CudaGrayImage(gray_device=gray_device, blocks_per_grid=blocks_per_grid)
 
@@ -101,16 +103,21 @@ def sobel_numba_cuda(gray_image):
         sobel_device,
     )
 
-    cuda.synchronize()
+    return sobel_device
 
-    return sobel_device.copy_to_host()
+
+def transfer_out(result):
+    return result.copy_to_host()
 
 
 def warmup(image_path):
     image = Image.open(image_path).convert("RGB").resize((8, 8))
     rgb = np.asarray(image, dtype=np.uint8)
-    gray = rgb_to_gray(rgb)
-    sobel_numba_cuda(gray)
+    rgb_device = transfer_in(rgb)
+    gray = rgb_to_gray(rgb_device)
+    result = sobel_numba_cuda(gray)
+    transfer_out(result)
+    cuda.synchronize()
 
 
 def info():
@@ -126,8 +133,11 @@ def info():
 def build_runner():
     return {
         "load": load_image,
+        "transfer_in": transfer_in,
         "gray": rgb_to_gray,
         "sobel": sobel_numba_cuda,
+        "transfer_out": transfer_out,
+        "synchronize": cuda.synchronize,
         "warmup": warmup,
         "info": info,
     }

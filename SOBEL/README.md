@@ -27,14 +27,16 @@ tiempos en terminal y abre la imagen resultante.
 ## Benchmark CSV
 
 Por defecto recorre `750x750`, `1500x1500`, `3000x3000` y `6000x6000`, con 5
-corridas por metodo. Incluye secuencial, NumPy, Numba paralelo CPU y PyTorch
-para los dispositivos disponibles:
+corridas por metodo. Incluye secuencial, NumPy, Numba paralelo CPU, Numba CUDA
+si esta disponible y PyTorch para los dispositivos disponibles. Por defecto los
+scripts se ejecutan uno por vez para evitar que compitan por recursos:
 
 ```bash
 python benchmark_sobel.py --output=resultados_sobel.csv
 ```
 
-Limitar la cantidad de scripts ejecutados en paralelo:
+Ejecutar varios scripts en paralelo acelera la recoleccion, pero contamina las
+mediciones. Usarlo solo para una corrida exploratoria rapida:
 
 ```bash
 python benchmark_sobel.py --workers=4
@@ -53,9 +55,8 @@ method,device,image,runs,transferencia_promedio_s,rgb_gris_promedio_s,sobel_prom
 ```
 
 `transferencia_promedio_s` es `0` para CPU. Para CUDA y MPS mide el movimiento
-de entrada y salida entre CPU y acelerador. Esta columna queda separada porque
-`total_promedio_s` se calcula, segun la consigna, como
-`rgb_gris_promedio_s + sobel_promedio_s`.
+de entrada y salida entre CPU y acelerador. `total_promedio_s` incluye ese costo:
+`transferencia_promedio_s + rgb_gris_promedio_s + sobel_promedio_s`.
 
 `speed_up` se calcula como `tiempo_total_secuencial / tiempo_total_metodo`.
 `performance_pct` se calcula como `speed_up * 100`.

@@ -89,7 +89,7 @@ def timed_run(runner, image_path):
         synchronize(runner)
         transfer_seconds += time.perf_counter() - transfer_start
 
-    total_seconds = gray_seconds + sobel_seconds
+    total_seconds = transfer_seconds + gray_seconds + sobel_seconds
 
     return {
         "transferencia_s": transfer_seconds,

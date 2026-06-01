@@ -12,7 +12,7 @@ import torch
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_RUNS = 5
 DEFAULT_IMAGES = ("750x750", "1500x1500", "3000x3000", "6000x6000")
-METHODS = (
+CPU_METHODS = (
     ("secuencial", "sobel_secuencial.py", None),
     ("numpy", "sobel_numpy.py", None),
     ("numba_parallel", "sobel_numba_parallel.py", None),
@@ -43,6 +43,15 @@ def available_devices():
     return tuple(devices)
 
 
+def numba_cuda_available():
+    try:
+        from numba import cuda
+
+        return cuda.is_available()
+    except Exception:
+        return False
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Ejecuta el benchmark Sobel y devuelve solo resultados CSV."
@@ -58,8 +67,11 @@ def parse_args():
     parser.add_argument(
         "--workers",
         type=int,
-        default=os.cpu_count() or 1,
-        help="Cantidad maxima de scripts ejecutandose en paralelo.",
+        default=1,
+        help=(
+            "Cantidad maxima de scripts ejecutandose en paralelo. "
+            "Usar mas de 1 acelera la recoleccion, pero contamina las mediciones."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -81,11 +93,16 @@ def parse_args():
 
 
 def build_methods(devices):
+    numba_cuda_methods = (
+        (("numba_cuda", "sobel_numba_cuda.py", None),)
+        if numba_cuda_available()
+        else ()
+    )
     pytorch_methods = tuple(
         (f"pytorch_{device}", "sobel_pytorch.py", device)
         for device in devices
     )
-    return METHODS + pytorch_methods
+    return CPU_METHODS + numba_cuda_methods + pytorch_methods
 
 
 def run_script(method, script_name, image, runs, device):
